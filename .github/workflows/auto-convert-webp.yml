@@ -142,5 +142,6 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: ":bento: auto-convert images to webp [skip ci]"
-          file_pattern: "stickers/**/*.webp"
+          add_options: "-A"
+          file_pattern: "stickers"
           disable_globbing: false
