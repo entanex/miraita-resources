@@ -5,10 +5,29 @@ on:
     branches:
       - master
     paths:
-      - 'stickers/**'
+      - "stickers/**"
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "manual run mode: all = scan all under stickers/, changed = only changed files (last commit range)"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - changed
+      quality:
+        description: "WebP quality (1-100)"
+        required: false
+        default: "90"
+      method:
+        description: "WebP method (0-6, bigger = better compression/slower)"
+        required: false
+        default: "6"
 
 permissions:
-  contents: write 
+  contents: write
 
 jobs:
   convert-to-webp:
@@ -19,71 +38,109 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
+
+      - name: Normalize git quoting (avoid escaped unicode paths)
+        shell: bash
+        run: |
+          git config --global core.quotepath false
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Install Pillow
         run: python -m pip install --upgrade pip pillow
 
       - name: Get changed files
         id: changed-files
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'changed')
         uses: tj-actions/changed-files@v44
         with:
           files: |
             stickers/**
-      
-      - name: List all changed files
+          quotepath: false
+
+      - name: Debug changed-files outputs
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'changed')
+        shell: bash
+        run: |
+          echo "any_changed=${{ steps.changed-files.outputs.any_changed }}"
+          echo "all_changed_files=${{ steps.changed-files.outputs.all_changed_files }}"
+
+      - name: Convert images to WebP
+        shell: bash
         env:
           ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
-        run: |
-          for file in ${ALL_CHANGED_FILES}; do
-            echo "$file was changed"
-          done
-
-      - name: Convert non-webp images
-        if: steps.changed-files.outputs.any_changed == 'true'
-        shell: bash
+          ANY_CHANGED: ${{ steps.changed-files.outputs.any_changed }}
+          MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'changed' }}
+          QUALITY: ${{ github.event_name == 'workflow_dispatch' && inputs.quality || '90' }}
+          METHOD: ${{ github.event_name == 'workflow_dispatch' && inputs.method || '6' }}
         run: |
           python - <<'PY'
           import os
           from pathlib import Path
           from PIL import Image
 
-          changed_files = """${{ steps.changed-files.outputs.all_changed_files }}""".split()
+          mode = os.environ.get("MODE", "changed").strip()
+          quality = int(os.environ.get("QUALITY", "90"))
+          method = int(os.environ.get("METHOD", "6"))
+
           exts = {'.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
-          
+          stickers_dir = Path("stickers")
+
+          candidates = []
+          if mode == "all":
+              if stickers_dir.exists():
+                  candidates = [p for p in stickers_dir.rglob("*") if p.is_file() and p.suffix.lower() in exts]
+          else:
+              changed_files = os.environ.get("ALL_CHANGED_FILES", "").split()
+              for fp in changed_files:
+                  p = Path(fp)
+                  if p.is_file() and p.suffix.lower() in exts:
+                      candidates.append(p)
+
+          uniq = []
+          seen = set()
+          for p in candidates:
+              rp = str(p)
+              if rp not in seen:
+                  seen.add(rp)
+                  uniq.append(p)
+          candidates = uniq
+
+          if not candidates:
+              print(f"No eligible images found. mode={mode}")
+              raise SystemExit(0)
+
           converted = 0
-          for file_path in changed_files:
-              src = Path(file_path)
-              if not src.exists() or src.suffix.lower() not in exts:
-                  continue
-              
+          skipped = 0
+          for src in candidates:
+              dst = src.with_suffix('.webp')
               try:
-                  dst = src.with_suffix('.webp')
                   with Image.open(src) as im:
                       if im.mode in ('RGBA', 'LA') or (im.mode == 'P' and 'transparency' in im.info):
                           im = im.convert('RGBA')
                       else:
                           im = im.convert('RGB')
-                      
-                      im.save(dst, 'WEBP', quality=90, method=6)
-                  
+
+                      im.save(dst, 'WEBP', quality=quality, method=method)
+
                   src.unlink()
-                  print(f'Converted: {src} -> {dst}')
+
+                  print(f"Converted: {src} -> {dst}")
                   converted += 1
               except Exception as e:
-                  print(f'Error converting {src}: {e}')
+                  print(f"Error converting {src}: {e}")
+                  skipped += 1
 
-          print(f'Total converted: {converted}')
+          print(f"Total converted: {converted}, skipped: {skipped}")
           PY
 
       - name: Commit & Push changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: ":bento: auto-convert images to webp [skip ci]"
-          file_pattern: 'images/*.webp stickers/*.webp templates/*.webp'
+          file_pattern: "stickers/**/*.webp"
           disable_globbing: false
