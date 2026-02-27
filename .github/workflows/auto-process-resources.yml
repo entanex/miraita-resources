@@ -1,0 +1,133 @@
+﻿name: Auto Process Resources
+
+on:
+  push:
+    branches:
+      - master
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "manual run mode: all = scan all, changed = only changed"
+        required: false
+        default: "changed"
+        type: choice
+        options: [all, changed]
+
+permissions:
+  contents: write
+
+jobs:
+  convert-to-webp:
+    name: Convert Stickers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Normalize git
+        run: git config --global core.quotepath false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Pillow
+        run: python -m pip install --upgrade pip pillow
+
+      - name: Get changed stickers
+        id: changed-files
+        uses: tj-actions/changed-files@v44
+        with:
+          files: stickers/**
+          quotepath: false
+
+      - name: Convert non-webp images
+        if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
+          MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'changed' }}
+        run: |
+          python - <<'PY'
+          import os, sys
+          from pathlib import Path
+          from PIL import Image
+
+          mode = os.environ.get("MODE", "changed")
+          exts = {'.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
+          candidates = []
+
+          if mode == "all":
+              stickers_dir = Path("stickers")
+              if stickers_dir.exists():
+                  candidates = [p for p in stickers_dir.rglob("*") if p.is_file() and p.suffix.lower() in exts]
+          else:
+              files = os.environ.get("ALL_CHANGED_FILES", "").split()
+              candidates = [Path(f) for f in files if Path(f).exists() and Path(f).suffix.lower() in exts]
+
+          if not candidates:
+              print("No stickers need conversion.")
+              sys.exit(0)
+
+          count = 0
+          for src in candidates:
+              try:
+                  dst = src.with_suffix('.webp')
+                  with Image.open(src) as im:
+                      if im.mode in ('RGBA', 'LA') or (im.mode == 'P' and 'transparency' in im.info):
+                          im = im.convert('RGBA')
+                      else:
+                          im = im.convert('RGB')
+                      im.save(dst, 'WEBP', quality=90, method=6)
+                  src.unlink()
+                  print(f"Converted: {src} -> {dst}")
+                  count += 1
+              except Exception as e:
+                  print(f"Error {src}: {e}")
+          print(f"Total converted: {count}")
+          PY
+
+      - name: Commit & Push WebP
+        if: steps.changed-files.outputs.any_changed == 'true' || github.event_name == 'workflow_dispatch'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: ":bento: auto-convert stickers to webp [skip ci]"
+          file_pattern: "stickers/**"
+
+  zip-resources:
+    name: Zip Resources
+    needs: convert-to-webp
+    if: always() && (needs.convert-to-webp.result == 'success' || needs.convert-to-webp.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 1
+
+      - name: Pull latest changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull origin master || echo "Nothing to pull"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate zip file
+        run: python generate_zipfile.py
+
+      - name: Commit updated zip
+        uses: EndBug/add-and-commit@v9
+        with:
+          author_name: github-actions[bot]
+          author_email: github-actions[bot]@users.noreply.github.com
+          message: ':wrench: auto zip resources [skip ci]'
+          add: 'miraita-resources.zip'
