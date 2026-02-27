@@ -1,0 +1,79 @@
+﻿name: Auto Convert Images To WebP
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'stickers/**'
+
+permissions:
+  contents: write
+
+jobs:
+  convert-to-webp:
+    name: Convert Images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Pillow
+        run: python -m pip install --upgrade pip pillow
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v44
+        with:
+          files: |
+            stickers/**
+
+      - name: Convert non-webp images
+        if: steps.changed-files.outputs.any_changed == 'true'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from PIL import Image
+
+          changed_files = """${{ steps.changed-files.outputs.all_changed_files }}""".split()
+          exts = {'.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
+          
+          converted = 0
+          for file_path in changed_files:
+              src = Path(file_path)
+              if not src.exists() or src.suffix.lower() not in exts:
+                  continue
+              
+              try:
+                  dst = src.with_suffix('.webp')
+                  with Image.open(src) as im:
+                      if im.mode in ('RGBA', 'LA') or (im.mode == 'P' and 'transparency' in im.info):
+                          im = im.convert('RGBA')
+                      else:
+                          im = im.convert('RGB')
+                      
+                      im.save(dst, 'WEBP', quality=90, method=6)
+                  
+                  src.unlink()
+                  print(f'Converted: {src} -> {dst}')
+                  converted += 1
+              except Exception as e:
+                  print(f'Error converting {src}: {e}')
+
+          print(f'Total converted: {converted}')
+          PY
+
+      - name: Commit & Push changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: ":bento: auto-convert images to webp [skip ci]"
+          file_pattern: 'images/*.webp stickers/*.webp templates/*.webp'
+          disable_globbing: false
