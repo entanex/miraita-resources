@@ -45,8 +45,9 @@
         <p class="title">注册时间<p class="mx-1 font-noto">📅</p></p><p class="result">{{ user["created_at"] }}</p>
       </div>
       {% if stats_bar %}
+        {% set today_coding_text = stats_bar["grand_total"]["text"] | default("", true) | trim %}
         <div class="content">
-          <p class="title">今日编码时间<p class="mx-1 font-noto">⏳</p></p><p class="result">{{ stats_bar["grand_total"]["text"] }}</p>
+          <p class="title">今日编码时间<p class="mx-1 font-noto">⏳</p></p><p class="result">{{ today_coding_text if today_coding_text else "暂无数据" }}</p>
         </div>
       {% endif %}
       {% if operating_systems %}
